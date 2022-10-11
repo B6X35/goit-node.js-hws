@@ -23,7 +23,15 @@ const userSchema = new Schema({
   token: {
     type: String,
     default: ""
-  }
+  },
+  verify: {
+    type: Boolean,
+    default: false,
+  },
+  verificationToken: {
+    type: String,
+    required: [true, 'Verify token is required'],
+  },
 });
 
 // const registerSchema = Joi.object({
