@@ -7,12 +7,13 @@ const gravatar = require("gravatar");
 const fs = require("fs/promises");
 const path = require("path");
 const jimp = require("jimp");
+const {nanoid} = require("nanoid");
 
 const { authenticate, upload } = require("../../middlewares");
 
-const { RequestError } = require("../../helpers");
+const { RequestError, sendMail } = require("../../helpers");
 
-const { SECRET_KEY } = process.env;
+const { SECRET_KEY, BASE_URL } = process.env;
 
 const avatarsDir = path.join(__dirname, "../../", "public", "avatars")
 
@@ -21,6 +22,10 @@ const router = express.Router();
 const userSchema = Joi.object({
   email: Joi.string().required(),
   password: Joi.string().required(),
+});
+
+const verifyEmailSchema = Joi.object({
+  email: Joi.string().required(),
 });
 
 router.post("/register", async (req, res, next) => {
@@ -36,14 +41,72 @@ router.post("/register", async (req, res, next) => {
     }
     const hashPassword = await bcrypt.hash(password, 10);
     const avatarURL = gravatar.url(email);
-    const result = await User.create({ email, password: hashPassword, avatarURL });
+    const verificationToken = nanoid();
+    const result = await User.create({ email, password: hashPassword, avatarURL, verificationToken });
+    const mail = {
+      to: email,
+      subject: "Verification",
+      html: `<a href="${BASE_URL}/api/auth/users/verify/${verificationToken}" target="_blank">Press to Verification</a>`
+    }
+
+    await sendMail(mail);
+
     res.status(201).json({
       email: result.email,
       avatarURL: result.avatarURL,
       subscription: result.subscription,
+      verificationToken: result.verificationToken,
     });
   } catch (error) {
     next(error);
+  }
+});
+
+router.get("/verify/:verificationToken", async (req, res, next) => {
+  try {
+    const {verificationToken} = req.params;
+    const user = await User.findOne({verificationToken});
+    if(!user) {
+      throw RequestError(404, "Not found")
+    }
+    await User.findByIdAndUpdate(user._id, {verify: true, verificationToken: ""});
+    res.json({
+      message: 'Verification successful',
+    })
+    const mail = {
+      to: email,
+      subject: "Verification",
+      html: `<a href="${BASE_URL}/api/auth/users/verify/${user.verificationToken}" target="_blank">Press to Verification</a>`
+    }
+
+    await sendMail(mail);
+
+    res.json({
+      message: "Verification email sent",
+    })
+
+  } catch(error){
+    next(error)
+  }
+});
+
+router.post("verify", async (req, res, next) => {
+  try {
+    const {email} = req.body;
+    const user = await User.findOne({ email });
+    const { error } = verifyEmailSchema.validate(req.body);
+    if (error) {
+      throw RequestError(400, "missing required field email");
+    };
+    if (!user) {
+      throw RequestError(404, "Not found");
+    }
+    if(!user.verify){
+      throw RequestError(404, "Verification has already been passed")
+    }
+
+  } catch(error){
+    next(error)
   }
 });
 
@@ -61,6 +124,9 @@ router.post("/login", async (req, res, next) => {
     const passwordCompare = await bcrypt.compare(password, user.password);
     if (!passwordCompare) {
       throw RequestError(401, "Email or password is wrong");
+    }
+    if(!user.verify){
+      throw RequestError(401, "Email not verify")
     }
     const payload = {
       id: user._id,
